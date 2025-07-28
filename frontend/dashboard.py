@@ -1,8 +1,3 @@
-"""
-Dashboard Simplificado - Sistema Logística JIT
-Versão que funciona sem erros
-"""
-
 import streamlit as st
 import requests
 import plotly.graph_objects as go
@@ -142,6 +137,68 @@ def display_frota_pie(estado_frota):
     
     return fig
 
+def mostrar_dados_brutos(tipo):
+    """Mostra dados brutos das tabelas do banco"""
+    st.subheader(f"📋 Dados Brutos - {tipo.upper()}")
+    
+    if tipo == "colheitabilidade":
+        # Dados das 3 curvas principais
+        dados = fetch_api_data("/api/tres-curvas")
+        if dados:
+            st.markdown("**🌾 TABELA: dados_tempo_real (último registro)**")
+            df = pd.DataFrame([dados])
+            st.dataframe(df, use_container_width=True)
+        
+        # Dados por fazenda
+        dados_fazendas = fetch_api_data("/api/colheitabilidade-fazendas")
+        if dados_fazendas and dados_fazendas.get('fazendas'):
+            st.markdown("**🏡 TABELA: colheitabilidade_detalhada (registros recentes)**")
+            df = pd.DataFrame(dados_fazendas['fazendas'])
+            st.dataframe(df, use_container_width=True)
+    
+    elif tipo == "moagem":
+        # Dados das 3 curvas
+        dados = fetch_api_data("/api/tres-curvas")
+        if dados:
+            st.markdown("**🏭 TABELA: dados_tempo_real (campos relacionados à moagem)**")
+            campos_moagem = {
+                'timestamp': dados.get('timestamp'),
+                'moagem_ton_h': dados.get('moagem_ton_h'),
+                'capacidade_moagem': dados.get('capacidade_moagem'),
+                'fazendas_ativas': dados.get('fazendas_ativas')
+            }
+            df = pd.DataFrame([campos_moagem])
+            st.dataframe(df, use_container_width=True)
+    
+    elif tipo == "estoque":
+        # Estado da frota
+        estado_frota = fetch_api_data("/api/estado-frota")
+        if estado_frota:
+            st.markdown("**🚚 TABELA: estado_frota (último registro)**")
+            df = pd.DataFrame([estado_frota])
+            st.dataframe(df, use_container_width=True)
+        
+        # Caminhões detalhados
+        dados_caminhoes = fetch_api_data("/api/caminhoes")
+        if dados_caminhoes and dados_caminhoes.get('caminhoes'):
+            st.markdown("**🚛 TABELA: transporte_detalhado (últimos registros)**")
+            df = pd.DataFrame(dados_caminhoes['caminhoes'])
+            st.dataframe(df, use_container_width=True)
+        
+        # Dados de estoque das 3 curvas
+        dados = fetch_api_data("/api/tres-curvas")
+        if dados:
+            st.markdown("**📊 TABELA: dados_tempo_real (campos de estoque)**")
+            campos_estoque = {
+                'timestamp': dados.get('timestamp'),
+                'estoque_total_ton': dados.get('estoque_total_ton'),
+                'estoque_voltando_ton': dados.get('estoque_voltando_ton'),
+                'estoque_indo_ton': dados.get('estoque_indo_ton'),
+                'estoque_patio_ton': dados.get('estoque_patio_ton')
+            }
+            df = pd.DataFrame([campos_estoque])
+            st.dataframe(df, use_container_width=True)
+
 def main():
     """Função principal"""
     
@@ -251,6 +308,37 @@ def main():
                 st.info("📈 Moagem maior que colheita - estoque tende a diminuir")
             elif colheita > moagem + 20:
                 st.info("📉 Colheita maior que moagem - estoque tende a crescer")
+    
+    # ====================================================================
+    # SEÇÃO: DADOS BRUTOS DAS TABELAS
+    # ====================================================================
+    
+    st.markdown("---")
+    st.markdown("### 📋 Dados Brutos das Tabelas do Banco")
+    
+    # Três botões para visualizar dados brutos
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🌾 Colheitabilidade", use_container_width=True):
+            st.session_state.dados_tipo = "colheitabilidade"
+    
+    with col2:
+        if st.button("🏭 Moagem", use_container_width=True):
+            st.session_state.dados_tipo = "moagem"
+    
+    with col3:
+        if st.button("🚚 Estoque", use_container_width=True):
+            st.session_state.dados_tipo = "estoque"
+    
+    # Mostrar dados brutos baseado no botão clicado
+    if hasattr(st.session_state, 'dados_tipo'):
+        mostrar_dados_brutos(st.session_state.dados_tipo)
+        
+        # Botão para esconder
+        if st.button("❌ Esconder Dados"):
+            del st.session_state.dados_tipo
+            st.rerun()
     
     # Rodapé
     st.markdown("---")
