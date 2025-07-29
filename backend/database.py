@@ -10,10 +10,13 @@ from typing import List, Dict, Optional, Tuple
 from contextlib import contextmanager
 
 class DatabaseManager:
-    """Gerenciador de conexão e queries do banco SQLite"""
-    
-    def __init__(self, db_path: str = "../database/logistics.db"):
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            # Caminho correto baseado na estrutura
+            base_dir = Path(__file__).parent.parent
+            self.db_path = base_dir / "database" / "logistics.db"
+        else:
+            self.db_path = Path(db_path)
         
         if not self.db_path.exists():
             raise FileNotFoundError(f"Banco não encontrado: {self.db_path}")

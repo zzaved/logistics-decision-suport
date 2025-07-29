@@ -8,9 +8,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import asyncio
 import json
-from datetime import datetime
+import sqlite3 
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import uvicorn
+import sys
+from pathlib import Path
+
+# Adicionar o diretório database ao path
+sys.path.append(str(Path(__file__).parent.parent / "database"))
+from prediction_model import PredictionModel
 
 # Imports locais
 from database import DatabaseManager
@@ -392,6 +399,448 @@ async def internal_error_handler(request, exc):
         }
     )
 
+@app.get("/api/estoque-patio-consolidado")
+async def get_estoque_patio_consolidado():
+    """
+    Endpoint principal para o novo gráfico consolidado
+    Retorna dados históricos + predições futuras
+    """
+    try:
+        # Usar a conexão diretamente
+        conn = sqlite3.connect(db_manager.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Histórico das últimas 12 horas
+        limite_historico = datetime.now() - timedelta(hours=12)
+        cursor.execute("""
+            SELECT 
+                timestamp,
+                estoque_patio_ton,
+                COALESCE(estoque_patio_fisico_ton, estoque_patio_ton * 0.7) as estoque_fisico,
+                COALESCE(taxa_entrada_patio_ton_h, 0) as taxa_entrada,
+                COALESCE(taxa_saida_patio_ton_h, moagem_ton_h) as taxa_saida,
+                moagem_ton_h,
+                colheitabilidade_ton_h
+            FROM dados_tempo_real 
+            WHERE timestamp >= ?
+            ORDER BY timestamp ASC
+        """, (limite_historico,))
+        
+        historico = []
+        rows = cursor.fetchall()
+        for row in rows:
+            historico.append({
+                'timestamp': row['timestamp'],
+                'estoque_patio': row['estoque_patio_ton'],
+                'estoque_fisico': row['estoque_fisico'],
+                'taxa_entrada': row['taxa_entrada'],
+                'taxa_saida': row['taxa_saida'],
+                'moagem': row['moagem_ton_h'],
+                'colheitabilidade': row['colheitabilidade_ton_h']
+            })
+        
+        # Buscar última predição
+        cursor.execute("""
+            SELECT 
+                timestamp_predicao,
+                hora_futura,
+                timestamp_previsto,
+                estoque_patio_previsto_ton,
+                estoque_limite_superior_ton,
+                estoque_limite_inferior_ton,
+                confiabilidade_percent,
+                ofensor_principal,
+                ofensor_valor
+            FROM predicoes_estoque_patio
+            WHERE timestamp_predicao = (
+                SELECT MAX(timestamp_predicao) FROM predicoes_estoque_patio
+            )
+            ORDER BY hora_futura ASC
+        """)
+        
+        predicoes = []
+        timestamp_predicao = None
+        pred_rows = cursor.fetchall()
+        for row in pred_rows:
+            if not timestamp_predicao:
+                timestamp_predicao = row[0]
+            predicoes.append({
+                'hora_futura': row[1],
+                'timestamp_previsto': row[2],
+                'estoque_previsto': row[3],
+                'limite_superior': row[4],
+                'limite_inferior': row[5],
+                'confiabilidade': row[6] / 100.0,
+                'ofensor': row[7],
+                'ofensor_valor': row[8]
+            })
+        
+        # Buscar limites operacionais
+        cursor.execute("""
+            SELECT limite_inferior, limite_superior,
+                   limite_critico_inferior, limite_critico_superior
+            FROM limites_operacionais
+            WHERE variavel = 'estoque_patio_ton'
+        """)
+        limites_row = cursor.fetchone()
+        
+        conn.close()
+        
+        # Estado atual
+        estado_atual = None
+        if historico:
+            ultimo = historico[-1]
+            estado_atual = {
+                'timestamp': ultimo['timestamp'],
+                'estoque_patio': ultimo['estoque_patio'],
+                'taxa_entrada': ultimo['taxa_entrada'],
+                'taxa_saida': ultimo['taxa_saida'],
+                'balanco': ultimo['taxa_entrada'] - ultimo['taxa_saida']
+            }
+        
+        return {
+            "timestamp_consulta": datetime.now().isoformat(),
+            "limites": {
+                "inferior": limites_row[0] if limites_row else 800,
+                "superior": limites_row[1] if limites_row else 1500,
+                "critico_inferior": limites_row[2] if limites_row else 600,
+                "critico_superior": limites_row[3] if limites_row else 1800
+            },
+            "historico": {
+                "dados": historico,
+                "total_pontos": len(historico),
+                "horas": 12
+            },
+            "estado_atual": estado_atual,
+            "predicao": {
+                "timestamp_predicao": timestamp_predicao,
+                "dados": predicoes,
+                "horizonte_horas": len(predicoes)
+            } if predicoes else None
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar dados consolidados: {str(e)}")
+
+@app.post("/api/gerar-predicao",
+    summary="Gera nova predição",
+    description="Força geração de nova predição de estoque para próximas 9 horas")
+async def gerar_nova_predicao():
+    """
+    Força geração de nova predição
+    """
+    try:
+        model = PredictionModel()
+        resultado = model.executar_predicao(salvar=True)
+        
+        return {
+            "status": "success",
+            "timestamp_predicao": resultado['timestamp_predicao'].isoformat(),
+            "horizonte_horas": resultado['horizonte_horas'],
+            "predicoes_geradas": len(resultado['predicoes']),
+            "modelo": resultado['modelo_usado']
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao gerar predição: {str(e)}")
+
+
+@app.get("/api/eventos-alertas/{horas}",
+    summary="Eventos e alertas recentes",
+    description="Retorna eventos do sistema nas últimas X horas")
+async def get_eventos_alertas(horas: int = 2):
+    """
+    Retorna eventos e alertas do sistema
+    """
+    try:
+        if horas < 1 or horas > 24:
+            raise HTTPException(status_code=400, detail="Horas deve estar entre 1 e 24")
+        
+        limite = datetime.now() - timedelta(hours=horas)
+        conn = sqlite3.connect(db_manager.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT * FROM eventos_sistema
+            WHERE timestamp >= ?
+            ORDER BY timestamp DESC
+            LIMIT 100
+        """, (limite,))
+        
+        eventos = []
+        resumo = {"INFO": 0, "AVISO": 0, "CRITICO": 0}
+        
+        for row in cursor.fetchall():
+            evento = dict(row)
+            eventos.append(evento)
+            resumo[evento['severidade']] += 1
+        
+        conn.close()
+        
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "periodo_horas": horas,
+            "resumo_severidade": resumo,
+            "total_eventos": len(eventos),
+            "eventos": eventos[:50]  # Limitar resposta
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar eventos: {str(e)}")
+
+
+@app.get("/api/analise-ofensores",
+    summary="Análise de ofensores",
+    description="Identifica principais causas de violações de limites")
+async def get_analise_ofensores():
+    """
+    Analisa principais ofensores nas últimas horas
+    """
+    try:
+        conn = sqlite3.connect(db_manager.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Buscar ofensores das predições recentes
+        cursor.execute("""
+            SELECT 
+                ofensor_principal,
+                COUNT(*) as ocorrencias,
+                AVG(ofensor_valor) as valor_medio
+            FROM predicoes_estoque_patio
+            WHERE timestamp_predicao > datetime('now', '-6 hours')
+                AND ofensor_principal IS NOT NULL
+            GROUP BY ofensor_principal
+            ORDER BY ocorrencias DESC
+        """)
+        
+        ofensores = []
+        for row in cursor.fetchall():
+            ofensores.append({
+                'tipo': row[0],
+                'ocorrencias': row[1],
+                'valor_medio': round(row[2], 1) if row[2] else None
+            })
+        
+        # Buscar o ofensor mais frequente
+        ofensor_principal = ofensores[0]['tipo'] if ofensores else None
+        
+        # Gerar recomendações
+        recomendacoes_map = {
+            "COLHEITA_ALTA": [
+                "🌾 Reduzir temporariamente frentes de colheita",
+                "🚚 Priorizar fazendas mais distantes", 
+                "📊 Verificar capacidade máxima de moagem"
+            ],
+            "MOAGEM_BAIXA": [
+                "🏭 Verificar status dos equipamentos",
+                "⚡ Otimizar eficiência da moenda",
+                "🔧 Avaliar necessidade de manutenção"
+            ],
+            "CHEGADAS_EXCESSIVAS": [
+                "🚛 Espaçar melhor as chegadas",
+                "📍 Direcionar para fazendas distantes",
+                "⏱️ Implementar agendamento"
+            ],
+            "POUCAS_CHEGADAS": [
+                "🚚 Aumentar frota ativa",
+                "📍 Focar em fazendas próximas",
+                "🔄 Reduzir tempo de ciclo"
+            ]
+        }
+        
+        recomendacoes = recomendacoes_map.get(ofensor_principal, ["📊 Continuar monitorando"])
+        
+        conn.close()
+        
+        return {
+            "periodo_analise": "Últimas 6 horas",
+            "timestamp": datetime.now().isoformat(),
+            "total_violacoes": sum(o['ocorrencias'] for o in ofensores),
+            "ofensores_frequentes": ofensores,
+            "ofensor_principal": ofensor_principal,
+            "recomendacoes": recomendacoes
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro na análise: {str(e)}")
+
+
+@app.websocket("/ws/estoque-patio")
+async def websocket_estoque_patio(websocket: WebSocket):
+    """
+    WebSocket específico para dados do estoque no pátio
+    Envia atualizações a cada 10 segundos
+    """
+    await websocket.accept()
+    
+    try:
+        while True:
+            # Buscar dados atuais
+            conn = sqlite3.connect(db_manager.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Estado atual
+            cursor.execute("""
+                SELECT 
+                    timestamp,
+                    estoque_patio_ton,
+                    COALESCE(taxa_entrada_patio_ton_h, 0) as taxa_entrada,
+                    COALESCE(taxa_saida_patio_ton_h, moagem_ton_h) as taxa_saida
+                FROM dados_tempo_real
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """)
+            
+            atual = cursor.fetchone()
+            
+            # Verificar alertas
+            cursor.execute("""
+                SELECT COUNT(*) FROM eventos_sistema
+                WHERE timestamp > datetime('now', '-5 minutes')
+                AND severidade IN ('AVISO', 'CRITICO')
+            """)
+            
+            alertas_recentes = cursor.fetchone()[0]
+            
+            conn.close()
+            
+            if atual:
+                mensagem = {
+                    "tipo": "estoque_patio_update",
+                    "timestamp": datetime.now().isoformat(),
+                    "dados": {
+                        "estoque_atual": atual[1],
+                        "taxa_entrada": atual[2],
+                        "taxa_saida": atual[3],
+                        "balanco": atual[2] - atual[3],
+                        "timestamp_dado": atual[0]
+                    },
+                    "tem_alertas": alertas_recentes > 0,
+                    "num_alertas": alertas_recentes
+                }
+                
+                await websocket.send_json(mensagem)
+            
+            # Aguardar 10 segundos
+            await asyncio.sleep(10)
+            
+    except WebSocketDisconnect:
+        print("🔌 Cliente desconectado do WebSocket estoque-patio")
+    except Exception as e:
+        print(f"❌ Erro no WebSocket estoque-patio: {e}")
+        await websocket.close()
+
+
+# ============================================================================
+# 3. ADICIONAR ESTE ENDPOINT DE STATUS PARA VERIFICAR SE TUDO ESTÁ FUNCIONANDO
+# ============================================================================
+
+@app.get("/api/status-v2",
+    summary="Status do sistema V2",
+    description="Verifica se todos os componentes V2 estão funcionando")
+async def get_status_v2():
+    """
+    Verifica status de todos os componentes V2
+    """
+    try:
+        status = {
+            "timestamp": datetime.now().isoformat(),
+            "componentes": {}
+        }
+        
+        conn = sqlite3.connect(db_manager.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # 1. Verificar novas tabelas
+        tabelas_v2 = [
+            'padroes_horarios',
+            'predicoes_estoque_patio',
+            'limites_operacionais',
+            'eventos_sistema'
+        ]
+        
+        for tabela in tabelas_v2:
+            cursor.execute(f"SELECT COUNT(*) FROM {tabela}")
+            count = cursor.fetchone()[0]
+            status["componentes"][f"tabela_{tabela}"] = {
+                "existe": True,
+                "registros": count
+            }
+        
+        # 2. Verificar novas colunas
+        cursor.execute("PRAGMA table_info(dados_tempo_real)")
+        colunas = [col[1] for col in cursor.fetchall()]
+        
+        novas_colunas = [
+            'estoque_patio_fisico_ton',
+            'taxa_entrada_patio_ton_h',
+            'taxa_saida_patio_ton_h'
+        ]
+        
+        for coluna in novas_colunas:
+            status["componentes"][f"coluna_{coluna}"] = coluna in colunas
+        
+        # 3. Verificar última predição
+        cursor.execute("""
+            SELECT MAX(timestamp_predicao) FROM predicoes_estoque_patio
+        """)
+        ultima_predicao = cursor.fetchone()[0]
+        
+        if ultima_predicao:
+            minutos_desde_predicao = (datetime.now() - datetime.fromisoformat(ultima_predicao.replace('Z', '+00:00'))).total_seconds() / 60
+            status["componentes"]["predicao"] = {
+                "ultima": ultima_predicao,
+                "minutos_atras": round(minutos_desde_predicao, 1),
+                "status": "OK" if minutos_desde_predicao < 10 else "ATRASADA"
+            }
+        else:
+            status["componentes"]["predicao"] = {
+                "status": "SEM_PREDICOES"
+            }
+        
+        # 4. Verificar dados recentes
+        cursor.execute("""
+            SELECT 
+                MAX(timestamp) as ultimo,
+                COUNT(*) as total
+            FROM dados_tempo_real
+            WHERE timestamp > datetime('now', '-1 hour')
+        """)
+        dados_recentes = cursor.fetchone()
+        
+        status["componentes"]["dados_tempo_real"] = {
+            "ultimo_registro": dados_recentes[0],
+            "registros_ultima_hora": dados_recentes[1],
+            "gerando_dados": dados_recentes[1] > 3
+        }
+        
+        conn.close()
+        
+        # Status geral
+        tudo_ok = all(
+            comp.get("existe", comp.get("status", True)) 
+            for comp in status["componentes"].values()
+        )
+        
+        status["status_geral"] = "OK" if tudo_ok else "PROBLEMAS"
+        status["versao"] = "2.0"
+        
+        return status
+        
+    except Exception as e:
+        return {
+            "status_geral": "ERRO",
+            "erro": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
 # ============================================================================
 # INICIALIZAÇÃO
 # ============================================================================
@@ -414,3 +863,4 @@ if __name__ == "__main__":
         reload=False,  # Desabilitar em produção
         log_level="info"
     )
+    
