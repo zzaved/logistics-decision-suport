@@ -3,8 +3,9 @@ import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
-from datetime import datetime
 import time
+import random
+from datetime import datetime, timedelta
 
 # Configuração da página
 st.set_page_config(
@@ -37,75 +38,318 @@ def check_api_status():
         return False
 
 def create_simple_chart(dados_atuais):
-    """Cria gráfico simples das 3 curvas"""
+    """Cria gráfico das 3 curvas - versão limpa e espaçada"""
     if not dados_atuais:
         return None
     
-    # Dados simulados para demonstração
-    horas = list(range(24))
-    
-    # Valores base
-    colheita_base = dados_atuais.get('colheitabilidade_ton_h', 60)
-    moagem_base = dados_atuais.get('moagem_ton_h', 85)
-    estoque_base = dados_atuais.get('estoque_total_ton', 2300)
-    
-    # Criar variações ao longo do dia
-    colheita_valores = [colheita_base + (h % 5 - 2) * 3 for h in horas]
-    moagem_valores = [moagem_base + (h % 7 - 3) * 2 for h in horas]
-    estoque_valores = [estoque_base + (h % 12 - 6) * 30 for h in horas]
-    
-    # Criar subplots
+    # Criar figura
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     
-    # Colheitabilidade
+    # Valores atuais
+    colheita_atual = dados_atuais.get('colheitabilidade_ton_h', 60)
+    moagem_atual = dados_atuais.get('moagem_ton_h', 85)
+    estoque_atual = dados_atuais.get('estoque_total_ton', 2300)
+    
+    # Timestamp atual
+    agora = datetime.now()
+    
+    # CONFIGURAÇÃO DE TEMPO: 1/3 passado, 2/3 futuro
+    # Total: 9 horas (3 passado + 6 futuro)
+    
+    # 1. DADOS HISTÓRICOS - Apenas 3 pontos no passado (bem espaçados)
+    timestamps_hist = [
+        agora - timedelta(hours=3),  # -3h
+        agora - timedelta(hours=2),  # -2h
+        agora - timedelta(hours=1),  # -1h
+    ]
+    
+    # Simular variação suave dos dados históricos
+    colheitas_hist = [
+        colheita_atual + random.uniform(-10, 10),
+        colheita_atual + random.uniform(-8, 8),
+        colheita_atual + random.uniform(-5, 5),
+    ]
+    
+    moagens_hist = [
+        moagem_atual + random.uniform(-15, 15),
+        moagem_atual + random.uniform(-10, 10),
+        moagem_atual + random.uniform(-5, 5),
+    ]
+    
+    # Calcular estoque histórico baseado no balanço
+    estoque_3h = estoque_atual - 3 * (colheita_atual - moagem_atual)
+    estoque_2h = estoque_atual - 2 * (colheita_atual - moagem_atual)
+    estoque_1h = estoque_atual - 1 * (colheita_atual - moagem_atual)
+    estoques_hist = [estoque_3h, estoque_2h, estoque_1h]
+    
+    # Adicionar ponto atual
+    timestamps_hist.append(agora)
+    colheitas_hist.append(colheita_atual)
+    moagens_hist.append(moagem_atual)
+    estoques_hist.append(estoque_atual)
+    
+    # 2. DADOS FUTUROS - 6 pontos (1 por hora)
+    timestamps_fut = []
+    colheitas_fut = [colheita_atual]
+    moagens_fut = [moagem_atual]
+    estoques_fut = [estoque_atual]
+    
+    for h in range(1, 7):  # 1 a 6 horas
+        timestamps_fut.append(agora + timedelta(hours=h))
+        
+        # Predição com variação suave
+        hora_futura = (agora.hour + h) % 24
+        
+        # Colheita reduz à noite
+        if 22 <= hora_futura or hora_futura <= 6:
+            fator_colheita = 0.7
+        else:
+            fator_colheita = 1.0
+            
+        colheita_pred = colheita_atual * fator_colheita + random.uniform(-5, 5)
+        moagem_pred = moagem_atual + random.uniform(-5, 5)
+        
+        colheitas_fut.append(max(30, min(80, colheita_pred)))
+        moagens_fut.append(max(70, min(110, moagem_pred)))
+        
+        # Estoque baseado no balanço
+        ultimo_estoque = estoques_fut[-1]
+        balanco = colheitas_fut[-1] - moagens_fut[-1]
+        novo_estoque = ultimo_estoque + balanco
+        estoques_fut.append(max(1800, min(2800, novo_estoque)))
+    
+    # PLOTAR DADOS HISTÓRICOS (linhas sólidas)
+    # Colheitabilidade histórica
     fig.add_trace(
         go.Scatter(
-            x=horas,
-            y=colheita_valores,
+            x=timestamps_hist,
+            y=colheitas_hist,
             mode='lines+markers',
             name='🌾 Colheitabilidade',
             line=dict(color='#2E8B57', width=3),
-            hovertemplate='<b>Colheitabilidade</b><br>%{y:.1f} ton/h<extra></extra>'
+            marker=dict(size=10),
+            hovertemplate='<b>Colheita</b><br>%{y:.1f} ton/h<extra></extra>'
         ),
         secondary_y=False
     )
     
-    # Moagem
+    # Moagem histórica
     fig.add_trace(
         go.Scatter(
-            x=horas,
-            y=moagem_valores,
+            x=timestamps_hist,
+            y=moagens_hist,
             mode='lines+markers',
             name='🏭 Moagem',
             line=dict(color='#4169E1', width=3),
+            marker=dict(size=10),
             hovertemplate='<b>Moagem</b><br>%{y:.1f} ton/h<extra></extra>'
         ),
         secondary_y=False
     )
     
-    # Estoque
+    # Estoque histórico
     fig.add_trace(
         go.Scatter(
-            x=horas,
-            y=estoque_valores,
+            x=timestamps_hist,
+            y=estoques_hist,
             mode='lines+markers',
             name='🚚 Estoque sobre Rodas',
             line=dict(color='#DC143C', width=3),
+            marker=dict(size=10),
             hovertemplate='<b>Estoque</b><br>%{y:.0f} ton<extra></extra>'
         ),
         secondary_y=True
     )
     
+    # MARCADOR "AGORA" - Estrelas grandes
+    fig.add_trace(
+        go.Scatter(
+            x=[agora],
+            y=[colheita_atual],
+            mode='markers+text',
+            marker=dict(color='#2E8B57', size=20, symbol='star'),
+            text=['AGORA'],
+            textposition='top center',
+            textfont=dict(size=14, color='#FFD700'),
+            showlegend=False,
+            hovertemplate='<b>AGORA</b><br>Colheita: %{y:.1f} ton/h<extra></extra>'
+        ),
+        secondary_y=False
+    )
+    
+    # PLOTAR PREDIÇÕES (linhas tracejadas)
+    # Colheita futura
+    fig.add_trace(
+        go.Scatter(
+            x=[agora] + timestamps_fut,
+            y=colheitas_fut,
+            mode='lines+markers',
+            name='🌾 Colheita (Predição)',
+            line=dict(color='#2E8B57', width=2, dash='dash'),
+            marker=dict(size=8),
+            opacity=0.7,
+            hovertemplate='<b>+%{customdata}h</b><br>Colheita: %{y:.1f} ton/h<extra></extra>',
+            customdata=[0, 1, 2, 3, 4, 5, 6]
+        ),
+        secondary_y=False
+    )
+    
+    # Moagem futura
+    fig.add_trace(
+        go.Scatter(
+            x=[agora] + timestamps_fut,
+            y=moagens_fut,
+            mode='lines+markers',
+            name='🏭 Moagem (Predição)',
+            line=dict(color='#4169E1', width=2, dash='dash'),
+            marker=dict(size=8),
+            opacity=0.7,
+            hovertemplate='<b>+%{customdata}h</b><br>Moagem: %{y:.1f} ton/h<extra></extra>',
+            customdata=[0, 1, 2, 3, 4, 5, 6]
+        ),
+        secondary_y=False
+    )
+    
+    # Estoque futuro
+    fig.add_trace(
+        go.Scatter(
+            x=[agora] + timestamps_fut,
+            y=estoques_fut,
+            mode='lines+markers',
+            name='🚚 Estoque (Predição)',
+            line=dict(color='#DC143C', width=2, dash='dash'),
+            marker=dict(size=8),
+            opacity=0.7,
+            hovertemplate='<b>+%{customdata}h</b><br>Estoque: %{y:.0f} ton<extra></extra>',
+            customdata=[0, 1, 2, 3, 4, 5, 6]
+        ),
+        secondary_y=True
+    )
+    
+    # Linhas de referência para COLHEITABILIDADE (verde)
+    fig.add_hline(
+        y=80, 
+        line=dict(color='#2E8B57', width=1, dash='dot'),
+        annotation_text="Colheita Máx",
+        annotation_position="left",
+        annotation=dict(font=dict(size=10)),
+        secondary_y=False
+    )
+    
+    fig.add_hline(
+        y=40, 
+        line=dict(color='#2E8B57', width=1, dash='dot'),
+        annotation_text="Colheita Mín",
+        annotation_position="left",
+        annotation=dict(font=dict(size=10)),
+        secondary_y=False
+    )
+    
+    # Linhas de referência para MOAGEM (azul)
+    fig.add_hline(
+        y=110, 
+        line=dict(color='#4169E1', width=1, dash='dot'),
+        annotation_text="Moagem Máx",
+        annotation_position="right",
+        annotation=dict(font=dict(size=10)),
+        secondary_y=False
+    )
+    
+    fig.add_hline(
+        y=70, 
+        line=dict(color='#4169E1', width=1, dash='dot'),
+        annotation_text="Moagem Mín",
+        annotation_position="right",
+        annotation=dict(font=dict(size=10)),
+        secondary_y=False
+    )
+    
+    # Linhas de referência para ESTOQUE (vermelho)
+    fig.add_hline(
+        y=2700, 
+        line=dict(color='#DC143C', width=1, dash='dot'),
+        annotation_text="Estoque Alto",
+        annotation_position="left",
+        annotation=dict(font=dict(size=10)),
+        secondary_y=True
+    )
+    
+    fig.add_hline(
+        y=2100, 
+        line=dict(color='#DC143C', width=1, dash='dot'),
+        annotation_text="Estoque Baixo",
+        annotation_position="left",
+        annotation=dict(font=dict(size=10)),
+        secondary_y=True
+    )
+    
     # Configurar eixos
-    fig.update_xaxes(title_text="⏰ Hora do Dia")
-    fig.update_yaxes(title_text="📈 Colheita e Moagem (ton/h)", secondary_y=False)
-    fig.update_yaxes(title_text="🚚 Estoque sobre Rodas (ton)", secondary_y=True)
+    fig.update_xaxes(
+        title_text="⏰ Tempo",
+        tickformat='%H:%M',  # Apenas hora:minuto
+        dtick=3600000,  # 1 hora
+        tickangle=0,
+        gridcolor='rgba(128,128,128,0.2)',
+        showgrid=True
+    )
+    
+    fig.update_yaxes(
+        title_text="📈 Colheita e Moagem (ton/h)", 
+        secondary_y=False,
+        range=[0, 200],
+        gridcolor='rgba(128,128,128,0.2)',
+        showgrid=True
+    )
+    
+    fig.update_yaxes(
+        title_text="🚚 Estoque sobre Rodas (ton)", 
+        secondary_y=True,
+        range=[1000, 3500]
+    )
     
     # Layout
     fig.update_layout(
-        title="📊 SISTEMA LOGÍSTICA JIT - TRÊS CURVAS PRINCIPAIS",
-        height=500,
-        hovermode='x unified'
+        title={
+            'text': "📊 TRÊS CURVAS PRINCIPAIS - ANÁLISE TEMPORAL",
+            'font': {'size': 20},
+            'x': 0.5,
+            'xanchor': 'center'
+        },
+        height=650,
+        hovermode='x unified',
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="middle",
+            y=0.5,
+            xanchor="left",
+            x=1.02,
+            bgcolor="rgba(0,0,0,0.8)",
+            bordercolor="rgba(255,255,255,0.3)",
+            borderwidth=1,
+            font=dict(size=12)
+        ),
+        xaxis=dict(
+            range=[timestamps_hist[0], timestamps_fut[-1]],  # Range fixo
+            fixedrange=False
+        ),
+        margin=dict(
+            l=100,
+            r=250,  # Espaço para legenda
+            t=100,
+            b=100
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)'
+    )
+    
+    # Adicionar área sombreada para separar passado/futuro
+    fig.add_vrect(
+        x0=agora - timedelta(minutes=30),
+        x1=agora + timedelta(minutes=30),
+        fillcolor="yellow",
+        opacity=0.1,
+        line_width=0
     )
     
     return fig
