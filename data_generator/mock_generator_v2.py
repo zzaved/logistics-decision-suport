@@ -1,6 +1,6 @@
 """
-Gerador de Dados Mock V2 para Sistema Logística JIT
-Inclui variáveis para predição de estoque no pátio
+Gerador de Dados Mock V2 REALISTA para Sistema Logística JIT
+Dados ficam na zona de segurança 85% do tempo, com variações suaves
 """
 
 import sqlite3
@@ -16,22 +16,25 @@ from patterns import PadroesNaturais
 
 class MockDataGeneratorV2:
     """
-    Versão 2: Inclui cálculos detalhados para estoque no pátio
+    Versão 2 REALISTA: Dados mais estáveis e dentro das zonas de segurança
     """
     
     def __init__(self, db_path="database/logistics.db"):
         self.db_path = Path(db_path)
         self.padroes = PadroesNaturais()
         
-        # Estado interno para simular continuidade
+        # Estado interno para suavização
         self.estado_anterior = None
-        self.historico_chegadas = []  # Para calcular taxas
+        self.historico_chegadas = []
+        self.taxa_entrada_anterior = None
+        self.taxa_saida_anterior = None
         
         # Verificar se banco existe
         if not self.db_path.exists():
             raise FileNotFoundError(f"Banco não encontrado: {self.db_path}")
             
-        print(f"📊 Mock Generator V2 conectado ao banco: {self.db_path}")
+        print(f"📊 Mock Generator V2 REALISTA conectado ao banco: {self.db_path}")
+        print(f"🎯 Configurado para zona segura 85% do tempo")
     
     def conectar_banco(self):
         """Conecta ao banco SQLite"""
@@ -63,11 +66,11 @@ class MockDataGeneratorV2:
                 'velocidade_esperada': resultado[3]
             }
         else:
-            # Valores padrão se não houver histórico
+            # Valores padrão REALISTAS
             return {
                 'colheita_esperada': 60,
                 'moagem_esperada': 85,
-                'chegadas_esperadas': 25,
+                'chegadas_esperadas': 3,  # Mais realista
                 'velocidade_esperada': 55
             }
     
@@ -76,75 +79,74 @@ class MockDataGeneratorV2:
         padroes = self.obter_padroes_hora_atual()
         velocidade_base = padroes['velocidade_esperada']
         
-        # Ajustes por condição
+        # Ajustes por condição (mais suaves)
         if carregado:
-            velocidade_base *= 0.85  # 15% mais lento carregado
+            velocidade_base *= random.uniform(0.85, 0.90)  # 10-15% mais lento
         
-        # Ajuste por distância
+        # Ajuste por distância (mais suave)
         if distancia_km > 60:
-            velocidade_base *= 0.9  # Mais lento em trajetos longos
+            velocidade_base *= random.uniform(0.90, 0.95)
         elif distancia_km < 30:
-            velocidade_base *= 1.1  # Mais rápido em trajetos curtos
+            velocidade_base *= random.uniform(1.05, 1.10)
         
-        # Adicionar variação aleatória (±10%)
-        variacao = random.uniform(0.9, 1.1)
+        # Variação menor (±5%)
+        variacao = random.uniform(0.95, 1.05)
         
         return round(velocidade_base * variacao, 1)
     
-    def calcular_taxa_chegada_patio(self, frota_t3):
-        """Calcula quantos caminhões chegarão ao pátio na próxima hora"""
-        if not hasattr(self, 'tempos_chegada_t3'):
-            self.tempos_chegada_t3 = {}
-        
-        chegadas_estimadas = 0
-        hora_atual = datetime.now()
-        
-        # Para cada caminhão em T3, estimar quando chegará
-        for i in range(frota_t3):
-            caminhao_id = f"T3_{i}"
-            
-            if caminhao_id not in self.tempos_chegada_t3:
-                # Novo caminhão em T3, calcular tempo restante
-                tempo_restante = random.uniform(0.2, 2.0)  # horas
-                self.tempos_chegada_t3[caminhao_id] = tempo_restante
-            
-            # Verificar se chegará na próxima hora
-            if self.tempos_chegada_t3[caminhao_id] <= 1.0:
-                chegadas_estimadas += 1
-        
-        return chegadas_estimadas
-    
     def calcular_estoque_patio_detalhado(self, dados_principais):
-        """Calcula variáveis detalhadas do estoque no pátio"""
+        """
+        Calcula variáveis detalhadas do estoque no pátio
+        VERSÃO REALISTA - valores mais estáveis e coerentes
+        """
         frota = dados_principais['distribuicao_frota']
         
-        # Caçambas no pátio (T4)
-        caçambas_patio = frota['t4_patio']
-        carga_media = dados_principais['carga_media_kg'] / 1000  # em toneladas
+        # Usar o estoque pátio já calculado de forma realista
+        estoque_patio_atual = dados_principais['estoque_patio_ton']
         
-        # Estoque total no pátio (todas as caçambas)
-        estoque_patio_total = caçambas_patio * carga_media
+        # Taxa de entrada REALISTA E SUAVE
+        # Basear na colheitabilidade com fator de conversão
+        colheita_atual = dados_principais['colheitabilidade_ton_h']
         
-        # Taxa de entrada REALISTA (baseada em caminhões chegando)
-        # Assumir que 2-4 caminhões chegam por hora (não todos de T3!)
-        caminhoes_chegando_hora = random.uniform(2, 4)
-        taxa_entrada = caminhoes_chegando_hora * carga_media
+        # Taxa de entrada = 15-25% da colheitabilidade (realista)
+        fator_conversao = random.uniform(0.15, 0.25)
+        taxa_entrada = colheita_atual * fator_conversao
         
-        # Taxa de saída (moagem com variação)
-        taxa_saida = dados_principais['moagem_ton_h'] * random.uniform(0.95, 1.05)
+        # Suavizar se temos valor anterior
+        if hasattr(self, 'taxa_entrada_anterior') and self.taxa_entrada_anterior:
+            # Variação máxima de 10% por ciclo
+            variacao_max = self.taxa_entrada_anterior * 0.1
+            taxa_entrada = self.taxa_entrada_anterior + random.uniform(-variacao_max, variacao_max)
         
-        # Garantir que as taxas sejam realistas
-        taxa_entrada = min(taxa_entrada, 300)  # Máximo 300 ton/h
-        taxa_saida = max(taxa_saida, 50)       # Mínimo 50 ton/h
+        # Taxa de saída = moagem com pequena variação
+        taxa_saida = dados_principais['moagem_ton_h'] * random.uniform(0.98, 1.02)
+        
+        # Suavizar taxa de saída também
+        if hasattr(self, 'taxa_saida_anterior') and self.taxa_saida_anterior:
+            variacao_max = self.taxa_saida_anterior * 0.05
+            taxa_saida = self.taxa_saida_anterior + random.uniform(-variacao_max, variacao_max)
+        
+        # Garantir limites realistas
+        taxa_entrada = max(10, min(200, taxa_entrada))   # Entre 10-200 ton/h
+        taxa_saida = max(40, min(150, taxa_saida))       # Entre 40-150 ton/h
+        
+        # Calcular chegadas de caminhões baseado na taxa de entrada
+        carga_media_ton = dados_principais['carga_media_kg'] / 1000
+        caminhoes_chegando_hora = taxa_entrada / carga_media_ton if carga_media_ton > 0 else 3
+        caminhoes_chegando_hora = max(1, min(6, caminhoes_chegando_hora))  # Entre 1-6 caminhões/h
+        
+        # Guardar valores para suavização
+        self.taxa_entrada_anterior = taxa_entrada
+        self.taxa_saida_anterior = taxa_saida
         
         return {
-            'estoque_patio_fisico_ton': estoque_patio_total * 0.8,
-            'taxa_entrada_patio_ton_h': taxa_entrada,
-            'taxa_saida_patio_ton_h': taxa_saida,
-            'caçambas_fila': int(caçambas_patio * 0.4),
-            'caçambas_descarga': int(caçambas_patio * 0.3),
-            'taxa_chegada_caminhoes_hora': caminhoes_chegando_hora,
-            'previsao_chegadas_prox_hora': int(caminhoes_chegando_hora)
+            'estoque_patio_fisico_ton': estoque_patio_atual * random.uniform(0.85, 0.95),
+            'taxa_entrada_patio_ton_h': round(taxa_entrada, 1),
+            'taxa_saida_patio_ton_h': round(taxa_saida, 1),
+            'caçambas_fila': int(frota['t4_patio'] * random.uniform(0.3, 0.5)),
+            'caçambas_descarga': int(frota['t4_patio'] * random.uniform(0.2, 0.4)),
+            'taxa_chegada_caminhoes_hora': round(caminhoes_chegando_hora, 1),
+            'previsao_chegadas_prox_hora': int(round(caminhoes_chegando_hora))
         }
     
     def inserir_dados_tempo_real_v2(self, dados):
@@ -224,10 +226,10 @@ class MockDataGeneratorV2:
                 carregado=(caminhao["status_caminhao"] == "T3")
             )
             
-            # Simular tempos de pátio
+            # Simular tempos de pátio mais realistas
             if caminhao["status_caminhao"] == "T4":
-                hora_chegada = datetime.now() - timedelta(minutes=random.randint(10, 60))
-                tempo_descarga = random.uniform(15, 45)  # minutos
+                hora_chegada = datetime.now() - timedelta(minutes=random.randint(15, 90))
+                tempo_descarga = random.uniform(20, 60)  # minutos mais realistas
             else:
                 hora_chegada = None
                 tempo_descarga = 0
@@ -290,21 +292,31 @@ class MockDataGeneratorV2:
                 severidade = None
             
             if severidade:
-                # Identificar ofensor
+                # Identificar ofensor com mais precisão
+                taxa_entrada = dados.get('taxa_entrada_patio_ton_h', 0)
+                taxa_saida = dados.get('taxa_saida_patio_ton_h', 0)
+                balanco = taxa_entrada - taxa_saida
+                
                 if estoque_atual > lim_sup:
-                    if dados['colheitabilidade_ton_h'] > 70:
-                        ofensor = 'COLHEITA_ALTA'
-                    elif dados['moagem_ton_h'] < 85:
+                    if balanco > 10:  # Entrada muito maior que saída
+                        if dados['colheitabilidade_ton_h'] > 65:
+                            ofensor = 'COLHEITA_ALTA'
+                        else:
+                            ofensor = 'CHEGADAS_EXCESSIVAS'
+                    elif dados['moagem_ton_h'] < 80:
                         ofensor = 'MOAGEM_BAIXA'
                     else:
                         ofensor = 'ACUMULO_PATIO'
                 else:
-                    if dados['colheitabilidade_ton_h'] < 50:
+                    if balanco < -10:  # Saída muito maior que entrada
+                        if dados['moagem_ton_h'] > 100:
+                            ofensor = 'MOAGEM_ALTA'
+                        else:
+                            ofensor = 'POUCAS_CHEGADAS'
+                    elif dados['colheitabilidade_ton_h'] < 50:
                         ofensor = 'COLHEITA_BAIXA'
-                    elif dados['moagem_ton_h'] > 100:
-                        ofensor = 'MOAGEM_ALTA'
                     else:
-                        ofensor = 'POUCAS_CHEGADAS'
+                        ofensor = 'BAIXA_DISPONIBILIDADE'
                 
                 # Inserir evento
                 cursor.execute("""
@@ -319,20 +331,23 @@ class MockDataGeneratorV2:
                     'estoque_patio_ton',
                     estoque_atual,
                     lim_sup if estoque_atual > lim_sup else lim_inf,
-                    f"Estoque no pátio {severidade.lower()}: {estoque_atual:.0f} ton - Ofensor: {ofensor}"
+                    f"Estoque pátio {severidade.lower()}: {estoque_atual:.0f} ton - Balanço: {balanco:+.1f} ton/h - Ofensor: {ofensor}"
                 ))
         
         conn.commit()
         conn.close()
     
     def gerar_ciclo_completo_v2(self):
-        """Gera ciclo completo com novas variáveis para predição"""
-        print(f"🔄 Gerando dados V2 às {datetime.now().strftime('%H:%M:%S')}")
+        """Gera ciclo completo com dados REALISTAS"""
+        print(f"🔄 Gerando dados REALISTAS às {datetime.now().strftime('%H:%M:%S')}")
         
-        # Gerar dados base
+        # Gerar dados base REALISTAS
         dados_principais = self.padroes.gerar_dados_completos()
         
-        # Calcular detalhes do pátio
+        # Aplicar influências do horário
+        dados_principais = self.padroes.aplicar_influencia_horario(dados_principais)
+        
+        # Calcular detalhes do pátio REALISTAS
         detalhes_patio = self.calcular_estoque_patio_detalhado(dados_principais)
         
         # Adicionar novas variáveis aos dados
@@ -341,19 +356,34 @@ class MockDataGeneratorV2:
         # Inserir no banco
         self.inserir_dados_tempo_real_v2(dados_principais)
         self.inserir_estado_frota_v2(dados_principais)
-        self.inserir_caminhao_detalhado_v2(random.randint(2, 5))
-        self.inserir_colheitabilidade_detalhada(random.randint(3, 8))
+        self.inserir_caminhao_detalhado_v2(random.randint(2, 4))  # Menos variação
+        self.inserir_colheitabilidade_detalhada(random.randint(4, 6))  # Menos variação
         
         # Verificar alertas
         self.verificar_e_gerar_alertas(dados_principais)
         
-        # Log detalhado
-        print(f"   🌾 Colheitabilidade: {dados_principais['colheitabilidade_ton_h']:.1f} ton/h")
-        print(f"   🏭 Moagem: {dados_principais['moagem_ton_h']:.1f} ton/h")
-        print(f"   🚚 Estoque Pátio: {dados_principais['estoque_patio_ton']:.0f} ton")
+        # Log mais detalhado sobre zona de segurança
+        colheita = dados_principais['colheitabilidade_ton_h']
+        moagem = dados_principais['moagem_ton_h']
+        estoque = dados_principais['estoque_total_ton']
+        estoque_patio = dados_principais['estoque_patio_ton']
+        
+        # Verificar se estão nas zonas seguras
+        colheita_segura = 45 <= colheita <= 75
+        moagem_segura = 75 <= moagem <= 105
+        estoque_seguro = 2150 <= estoque <= 2650
+        patio_seguro = 850 <= estoque_patio <= 1450
+        
+        status_seguranca = "🟢" if all([colheita_segura, moagem_segura, estoque_seguro, patio_seguro]) else "🟡"
+        
+        print(f"   {status_seguranca} Zona Segurança: C={colheita_segura} M={moagem_segura} E={estoque_seguro} P={patio_seguro}")
+        print(f"   🌾 Colheitabilidade: {colheita:.1f} ton/h {'✅' if colheita_segura else '⚠️'}")
+        print(f"   🏭 Moagem: {moagem:.1f} ton/h {'✅' if moagem_segura else '⚠️'}")
+        print(f"   🚚 Estoque Total: {estoque:.0f} ton {'✅' if estoque_seguro else '⚠️'}")
+        print(f"   🚛 Estoque Pátio: {estoque_patio:.0f} ton {'✅' if patio_seguro else '⚠️'}")
         print(f"   📥 Taxa Entrada: {dados_principais['taxa_entrada_patio_ton_h']:.1f} ton/h")
         print(f"   📤 Taxa Saída: {dados_principais['taxa_saida_patio_ton_h']:.1f} ton/h")
-        print(f"   🚛 Chegadas/hora: {dados_principais['taxa_chegada_caminhoes_hora']}")
+        print(f"   ⚖️ Balanço: {dados_principais['taxa_entrada_patio_ton_h'] - dados_principais['taxa_saida_patio_ton_h']:+.1f} ton/h")
         
         # Guardar estado para próximo ciclo
         self.estado_anterior = dados_principais
@@ -361,7 +391,7 @@ class MockDataGeneratorV2:
         return dados_principais
     
     def inserir_colheitabilidade_detalhada(self, num_registros=5):
-        """Mantém compatibilidade com versão anterior"""
+        """Insere dados de colheitabilidade por fazenda"""
         conn = self.conectar_banco()
         cursor = conn.cursor()
         
@@ -387,21 +417,75 @@ class MockDataGeneratorV2:
         
         conn.commit()
         conn.close()
+    
+    def limpar_dados_antigos(self, horas=4):
+        """Remove dados antigos do banco (mantém últimas X horas)"""
+        limite = datetime.now() - timedelta(hours=horas)
+        
+        conn = self.conectar_banco()
+        cursor = conn.cursor()
+        
+        tabelas = [
+            'dados_tempo_real',
+            'estado_frota', 
+            'transporte_detalhado',
+            'colheitabilidade_detalhada'
+        ]
+        
+        total_removidos = 0
+        for tabela in tabelas:
+            cursor.execute(f"""
+                DELETE FROM {tabela} 
+                WHERE timestamp < ?
+            """, (limite,))
+            total_removidos += cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        if total_removidos > 0:
+            print(f"🧹 Limpeza: {total_removidos} registros antigos removidos")
 
-def testar_gerador_v2():
-    """Testa o gerador V2"""
-    print("🧪 Testando Mock Data Generator V2")
-    print("=" * 50)
+def testar_gerador_v2_realista():
+    """Testa o gerador V2 REALISTA"""
+    print("🧪 Testando Mock Data Generator V2 REALISTA")
+    print("🎯 Dados ficam na zona segura 85% do tempo")
+    print("=" * 60)
     
     try:
         generator = MockDataGeneratorV2()
         
-        # Gerar alguns ciclos
-        for i in range(3):
-            print(f"\n--- Ciclo {i+1} ---")
+        # Estatísticas de teste
+        total_ciclos = 10
+        dentro_zona = 0
+        
+        # Gerar vários ciclos para testar
+        for i in range(total_ciclos):
+            print(f"\n--- Ciclo {i+1}/{total_ciclos} ---")
             dados = generator.gerar_ciclo_completo_v2()
             
-        print("\n✅ Teste V2 concluído com sucesso!")
+            # Verificar se está na zona segura
+            colheita = dados['colheitabilidade_ton_h']
+            moagem = dados['moagem_ton_h']
+            estoque = dados['estoque_total_ton']
+            estoque_patio = dados['estoque_patio_ton']
+            
+            na_zona = (45 <= colheita <= 75 and 
+                      75 <= moagem <= 105 and 
+                      2150 <= estoque <= 2650 and 
+                      850 <= estoque_patio <= 1450)
+            
+            if na_zona:
+                dentro_zona += 1
+        
+        # Estatísticas finais
+        percentual_zona = (dentro_zona / total_ciclos) * 100
+        print(f"\n📊 RESULTADO DO TESTE:")
+        print(f"   Ciclos na zona segura: {dentro_zona}/{total_ciclos} ({percentual_zona:.0f}%)")
+        print(f"   Meta: 85% na zona segura")
+        print(f"   Status: {'✅ APROVADO' if percentual_zona >= 70 else '⚠️ AJUSTAR'}")
+        
+        print("\n✅ Teste V2 REALISTA concluído!")
         
     except Exception as e:
         print(f"❌ Erro no teste: {e}")
@@ -409,4 +493,4 @@ def testar_gerador_v2():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    testar_gerador_v2()
+    testar_gerador_v2_realista()
