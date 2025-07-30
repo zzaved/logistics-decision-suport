@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 # Configuração da página
 st.set_page_config(
-    page_title="Sistema Logística JIT",
+    page_title="Sistema Logística",
     page_icon="🌾",
     layout="wide"
 )
@@ -601,7 +601,7 @@ def main():
     """Função principal"""
     
     # Título
-    st.title("🌾 Sistema Logística JIT - Usina Sucroenergética")
+    st.title("🌾 Sistema Logística JIT")
     
     # Variável para auto_refresh (precisa estar definida antes de ser usada)
     auto_refresh = True
@@ -611,7 +611,7 @@ def main():
     
     with tab1:
         # ===== CÓDIGO EXISTENTE DO DASHBOARD =====
-        st.markdown("**Dashboard Simplificado - Três Curvas Principais**")
+        st.markdown("**Dashboard de Três Curvas**")
         
         # Sidebar
         with st.sidebar:
